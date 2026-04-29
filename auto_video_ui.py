@@ -203,7 +203,10 @@ class VideoAutomationUI:
                     catalog_page.wait_for_timeout(800)
                     self.set_state(step="步骤2：搜索待看视频", found_video="否", open_video_ok="否", parse_time_ok="否", using_fallback="否")
 
-                    btn = catalog_page.locator("button:has-text('学习中'),a:has-text('学习中'),button:has-text('开始学习'),a:has-text('开始学习')").first
+                    btn = catalog_page.locator(
+                        "button:text-is('学习中'),a:text-is('学习中'),"
+                        "button:text-is('开始学习'),a:text-is('开始学习')"
+                    ).first
                     if btn.count() > 0:
                         self.set_state(found_video="是")
                         self.append_log("找到待看视频，准备打开。")
