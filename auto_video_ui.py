@@ -36,6 +36,7 @@ class VideoAutomationUI:
 
         self.state = RuntimeState()
         self.stop_event = threading.Event()
+        self.skip_wait_event = threading.Event()
         self.worker: threading.Thread | None = None
 
         self.labels: dict[str, tk.StringVar] = {}
@@ -51,7 +52,9 @@ class VideoAutomationUI:
         self.btn_start = ttk.Button(btn_frame, text="开始", command=self.start)
         self.btn_start.pack(side="left", padx=(0, 8))
         self.btn_stop = ttk.Button(btn_frame, text="停止", command=self.stop, state="disabled")
-        self.btn_stop.pack(side="left")
+        self.btn_stop.pack(side="left", padx=(0, 8))
+        self.btn_skip_wait = ttk.Button(btn_frame, text="跳过当前等待", command=self.skip_wait, state="disabled")
+        self.btn_skip_wait.pack(side="left")
 
         status_grid = ttk.LabelFrame(panel, text="实时状态", padding=10)
         status_grid.pack(fill="x")
@@ -99,6 +102,7 @@ class VideoAutomationUI:
         if self.worker and self.worker.is_alive():
             return
         self.stop_event.clear()
+        self.skip_wait_event.clear()
         self.btn_start.config(state="disabled")
         self.btn_stop.config(state="normal")
         self.set_state(status="运行中", step="初始化", countdown="-")
@@ -110,10 +114,15 @@ class VideoAutomationUI:
         self.append_log("收到停止信号，将在当前步骤后结束。")
         self.set_state(status="停止中")
 
+    def skip_wait(self):
+        self.skip_wait_event.set()
+        self.append_log("收到跳过等待信号：将在步骤5立即继续下一步。")
+
     def finish(self, status="已停止"):
         self.set_state(status=status, running=False, step="结束", countdown="-")
         self.root.after(0, lambda: self.btn_start.config(state="normal"))
         self.root.after(0, lambda: self.btn_stop.config(state="disabled"))
+        self.root.after(0, lambda: self.btn_skip_wait.config(state="disabled"))
 
     @staticmethod
     def parse_remaining_seconds(text: str) -> int | None:
@@ -128,6 +137,27 @@ class VideoAutomationUI:
             return parts[0] * 60 + parts[1]
         return parts[0] * 3600 + parts[1] * 60 + parts[2]
 
+
+
+    @staticmethod
+    def extract_remaining_text(video_page) -> str | None:
+        try:
+            text = video_page.evaluate("""() => {
+                const candidates = [];
+                const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+                while (walker.nextNode()) {
+                    const raw = (walker.currentNode.nodeValue || '').trim();
+                    if (!raw) continue;
+                    const m = raw.match(/-\d{1,2}:\d{2}(:\d{2})?/);
+                    if (m) candidates.push(m[0]);
+                }
+                return candidates.length ? candidates[candidates.length - 1] : null;
+            }""")
+            if isinstance(text, str) and text:
+                return text
+        except Exception:
+            pass
+        return None
 
     @staticmethod
     def detect_current_page(page) -> str:
@@ -158,7 +188,9 @@ class VideoAutomationUI:
                 return
             catalog_page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
             catalog_page.wait_for_timeout(500)
-            next_btn = catalog_page.locator("text='>'").last
+            next_btn = catalog_page.locator("text='›'").last
+            if next_btn.count() == 0:
+                next_btn = catalog_page.locator("text='>'").last
             if next_btn.count() == 0:
                 next_btn = catalog_page.locator(".layui-laypage-next,a[aria-label='Next']").first
             if next_btn.count() == 0:
@@ -168,13 +200,21 @@ class VideoAutomationUI:
             catalog_page.wait_for_timeout(1000)
 
     def wait_with_countdown(self, total_seconds: int):
+        self.skip_wait_event.clear()
+        self.root.after(0, lambda: self.btn_skip_wait.config(state="normal"))
         for remain in range(total_seconds, -1, -1):
             if self.stop_event.is_set():
+                self.root.after(0, lambda: self.btn_skip_wait.config(state="disabled"))
+                return
+            if self.skip_wait_event.is_set():
+                self.append_log("已跳过当前等待。")
+                self.root.after(0, lambda: self.btn_skip_wait.config(state="disabled"))
                 return
             self.set_state(countdown=f"{remain}s")
             if remain % 10 == 0:
                 self.append_log(f"等待中，剩余 {remain}s")
             time.sleep(1)
+        self.root.after(0, lambda: self.btn_skip_wait.config(state="disabled"))
 
     def run_automation(self):
         try:
@@ -249,6 +289,8 @@ class VideoAutomationUI:
                                     remaining_text = loc.inner_text(timeout=800)
                                 except PlaywrightTimeoutError:
                                     remaining_text = None
+                            if not remaining_text:
+                                remaining_text = self.extract_remaining_text(video_page)
                             if remaining_text:
                                 break
 
@@ -304,7 +346,7 @@ class VideoAutomationUI:
                         self.append_log("已到第5页且无待看视频，任务结束。")
                         break
 
-                    next_btn = catalog_page.locator("text='>'").last
+                    next_btn = catalog_page.locator("text='›'").last
                     if next_btn.count() == 0:
                         next_btn = catalog_page.locator(".layui-laypage-next,a[aria-label='Next']").first
 
